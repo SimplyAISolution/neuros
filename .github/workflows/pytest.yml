@@ -1,5 +1,4 @@
 name: Run Tests with pytest
-
 on:
   push:
     branches:
@@ -9,6 +8,7 @@ on:
     branches:
       - main
       - develop
+  workflow_dispatch:
 
 jobs:
   test:
