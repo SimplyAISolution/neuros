@@ -1,13 +1,10 @@
 """Core module for NEUROS - Main API and orchestration."""
-
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from pathlib import Path
-
 from .storage import MemoryStorage
 from .embeddings import EmbeddingManager
-
 
 class NEUROS:
     """Main NEUROS class that orchestrates memory storage and semantic search."""
@@ -233,9 +230,26 @@ class NEUROS:
         Returns:
             Reasoning response based on memories
         """
+        # Validate input - this will make the empty/None tests pass
+        if not query or (isinstance(query, str) and not query.strip()):
+            raise ValueError("Query cannot be empty or None")
+        
         # Get relevant memories
         memories = self.recall(query, limit=context_limit)
         
+        # Use the _generate_reasoning_response method
+        return self._generate_reasoning_response(query, memories)
+    
+    def _generate_reasoning_response(self, query: str, memories: List[Dict[str, Any]]) -> str:
+        """Generate reasoning response based on query and memories.
+        
+        Args:
+            query: The original query
+            memories: List of relevant memories
+            
+        Returns:
+            Generated reasoning response
+        """
         if not memories:
             return "I don't have any relevant memories to answer that question."
         
@@ -258,6 +272,43 @@ class NEUROS:
         response += "For more sophisticated reasoning, this MVP can be enhanced with LLM integration."
         
         return response
+    
+    # Alias methods for test compatibility
+    def store(self, content: str, context: Optional[Dict] = None) -> str:
+        """Store a memory (alias for remember method for test compatibility).
+        
+        Args:
+            content: The content to store
+            context: Context/metadata dictionary
+            
+        Returns:
+            String representation of memory ID
+        """
+        memory_id = self.remember(content, context)
+        return str(memory_id)
+    
+    def retrieve(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a memory by ID (alias for get_memory for test compatibility).
+        
+        Args:
+            memory_id: Memory ID as string
+            
+        Returns:
+            Memory dictionary or None if not found
+        """
+        try:
+            # Convert string ID to int and get memory
+            int_id = int(memory_id)
+            memory = self.get_memory(int_id)
+            if memory:
+                # Ensure the memory has the expected structure for tests
+                memory['id'] = memory_id  # Keep as string for test compatibility
+                # Map 'metadata' to 'context' for test compatibility
+                if 'metadata' in memory:
+                    memory['context'] = memory['metadata']
+            return memory
+        except (ValueError, TypeError):
+            return None
     
     def export_memories(self, format: str = 'json') -> str:
         """Export all memories.
