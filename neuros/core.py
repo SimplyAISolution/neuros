@@ -55,87 +55,114 @@ class NEUROS:
         Returns:
             Memory ID of the stored memory
         """
+        # Validate metadata before storing
+        if metadata is not None and not isinstance(metadata, dict):
+            metadata = None
+        
         # Store in SQLite
         memory_id = self.storage.store_memory(content, metadata, tags, importance)
         
         # Store embedding if enabled
         if self.embeddings and memory_id:
             success = self.embeddings.store_embedding(
-                str(memory_id), content, metadata
+                str(memory_id), content, metadata or {}
             )
             if not success:
                 logging.warning(f"Failed to store embedding for memory {memory_id}")
         
-        logging.info(f"Stored memory {memory_id}: {content[:50]}...")
+        if memory_id:
+            logging.info(f"Stored memory with ID: {memory_id}")
+        else:
+            logging.error("Failed to store memory")
+            
         return memory_id
     
-    def recall(self, query: str = None, tags: List[str] = None, 
-              use_semantic: bool = True, limit: int = 10, 
-              min_similarity: float = 0.1) -> List[Dict[str, Any]]:
-        """Retrieve memories based on query.
+    def recall(self, query: str, limit: int = 10, 
+              tags: Optional[List[str]] = None, 
+              importance_min: int = 1) -> List[Dict[str, Any]]:
+        """Retrieve memories matching the query.
         
         Args:
-            query: Text query to search for
-            tags: Tags to filter by
-            use_semantic: Whether to use semantic search
+            query: Search query
             limit: Maximum number of results
-            min_similarity: Minimum similarity for semantic search
+            tags: Optional tag filter
+            importance_min: Minimum importance level
             
         Returns:
-            List of matching memories
+            List of memory dictionaries
         """
-        memories = []
-        
-        # Try semantic search first if enabled and query provided
-        if (use_semantic and self.embeddings and query and 
-            query.strip() and len(query.strip()) > 2):
+        if self.embeddings:
+            # Use semantic search
             try:
-                semantic_results = self.embeddings.search_similar(
-                    query, limit, min_similarity
+                semantic_results = self.embeddings.search(
+                    query, limit=limit
                 )
                 
-                # Get full memory details from storage
-                for result in semantic_results:
-                    memory_id = int(result['memory_id'])
-                    memory = self.storage.get_memory(memory_id)
-                    if memory:
-                        memory['similarity'] = result['similarity']
-                        memory['search_type'] = 'semantic'
-                        memories.append(memory)
-                
-                logging.info(f"Semantic search found {len(memories)} memories")
-                
-                # If semantic search found enough results, return them
-                if len(memories) >= limit or len(memories) > 0:
-                    return memories[:limit]
-            
+                if semantic_results:
+                    memory_ids = [int(result['id']) for result in semantic_results]
+                    memories = self.storage.get_memories_by_ids(memory_ids)
+                    
+                    # Filter by tags and importance if specified
+                    if tags or importance_min > 1:
+                        memories = self._filter_memories(memories, tags, importance_min)
+                    
+                    logging.info(f"Semantic search returned {len(memories)} memories")
+                    return memories
             except Exception as e:
-                logging.warning(f"Semantic search failed: {e}")
+                logging.warning(f"Semantic search failed: {e}, falling back to text search")
         
-        # Fall back to text search in SQLite
-        try:
-            text_results = self.storage.search_memories(query, tags, limit)
-            for memory in text_results:
-                memory['search_type'] = 'text'
-                memories.append(memory)
-            
-            logging.info(f"Text search found {len(text_results)} memories")
-        
-        except Exception as e:
-            logging.error(f"Text search failed: {e}")
-        
-        return memories[:limit]
+        # Fallback to text search
+        memories = self.storage.search_memories(
+            query, limit=limit, tags=tags, importance_min=importance_min
+        )
+        logging.info(f"Text search returned {len(memories)} memories")
+        return memories
     
-    def get_memory(self, memory_id: int) -> Optional[Dict[str, Any]]:
-        """Get a specific memory by ID.
+    def reason(self, query: str, context_limit: int = 5) -> List[Dict[str, Any]]:
+        """Reason about a query by recalling relevant memories.
         
         Args:
-            memory_id: The memory ID
+            query: The reasoning query
+            context_limit: Maximum number of memories to consider
+            
+        Returns:
+            List of relevant memories for reasoning
+        """
+        # Ensure context_limit is an integer
+        context_limit = int(context_limit)
+        
+        # Use recall to get relevant memories
+        relevant_memories = self.recall(query, limit=context_limit)
+        
+        logging.info(f"Reasoning with {len(relevant_memories)} memories for query: {query}")
+        return relevant_memories
+    
+    def _filter_memories(self, memories: List[Dict], 
+                        tags: Optional[List[str]] = None,
+                        importance_min: int = 1) -> List[Dict]:
+        """Filter memories by tags and importance."""
+        filtered = memories
+        
+        if tags:
+            filtered = [m for m in filtered 
+                       if m.get('tags') and any(tag in m['tags'] for tag in tags)]
+        
+        if importance_min > 1:
+            filtered = [m for m in filtered 
+                       if m.get('importance', 1) >= importance_min]
+        
+        return filtered
+    
+    def get_memory_by_id(self, memory_id: int) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific memory by ID.
+        
+        Args:
+            memory_id: Memory ID to retrieve
             
         Returns:
             Memory dictionary or None if not found
         """
-        return self.storage.get_memory(memory_id)
+        return self.storage.get_memory_by_id(memory_id)
     
     def update_memory(self, memory_id: int, content: str = None, 
                      metadata: Dict = None, tags: List[str] = None, 
@@ -143,27 +170,24 @@ class NEUROS:
         """Update an existing memory.
         
         Args:
-            memory_id: Memory ID to update
-            content: New content
-            metadata: New metadata
-            tags: New tags
-            importance: New importance level
+            memory_id: ID of memory to update
+            content: New content (optional)
+            metadata: New metadata (optional)
+            tags: New tags (optional)
+            importance: New importance (optional)
             
         Returns:
             True if update successful
         """
-        # Update in SQLite
         success = self.storage.update_memory(
             memory_id, content, metadata, tags, importance
         )
         
-        # Update embedding if content changed and embeddings enabled
-        if success and content and self.embeddings:
-            embed_success = self.embeddings.update_embedding(
-                str(memory_id), content, metadata
+        if success and self.embeddings and content:
+            # Update embedding if content changed
+            self.embeddings.update_embedding(
+                str(memory_id), content, metadata or {}
             )
-            if not embed_success:
-                logging.warning(f"Failed to update embedding for memory {memory_id}")
         
         return success
     
@@ -171,147 +195,54 @@ class NEUROS:
         """Delete a memory.
         
         Args:
-            memory_id: Memory ID to delete
+            memory_id: ID of memory to delete
             
         Returns:
             True if deletion successful
         """
-        # Delete from SQLite
         success = self.storage.delete_memory(memory_id)
         
-        # Delete embedding if exists
         if success and self.embeddings:
-            embed_success = self.embeddings.delete_embedding(str(memory_id))
-            if not embed_success:
-                logging.warning(f"Failed to delete embedding for memory {memory_id}")
+            self.embeddings.delete_embedding(str(memory_id))
         
         return success
     
-    def get_all_memories(self, limit: int = None) -> List[Dict[str, Any]]:
-        """Get all memories.
+    def get_all_memories(self) -> List[Dict[str, Any]]:
+        """Get all stored memories.
         
-        Args:
-            limit: Optional limit on number of memories
-            
         Returns:
-            List of all memories
+            List of all memory dictionaries
         """
-        return self.storage.get_all_memories(limit)
+        return self.storage.get_all_memories()
+    
+    def get_memory_count(self) -> int:
+        """Get total number of memories.
+        
+        Returns:
+            Total memory count
+        """
+        return self.storage.get_memory_count()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get system statistics.
         
         Returns:
-            Dictionary with system statistics
+            Dictionary with system stats
         """
         stats = {
-            'total_memories': len(self.storage.get_all_memories()),
+            'total_memories': self.get_memory_count(),
+            'embeddings_enabled': self.embeddings is not None,
             'db_path': self.db_path,
-            'embedding_model': self.embedding_model,
-            'embeddings_enabled': self.embeddings is not None
+            'embedding_model': self.embedding_model if self.embeddings else None
         }
         
         if self.embeddings:
-            embedding_stats = self.embeddings.get_collection_stats()
-            stats.update({
-                'embedding_count': embedding_stats.get('count', 0),
-                'chroma_path': embedding_stats.get('db_path', self.chroma_path)
-            })
+            stats['embedding_count'] = self.embeddings.get_count()
         
         return stats
     
-    def reason(self, query: str, context_limit: int = 5) -> str:
-        """Simple reasoning over memories (MVP implementation).
-        
-        Args:
-            query: Question or query to reason about
-            context_limit: Number of relevant memories to consider
-            
-        Returns:
-            Reasoning response based on memories
-        """
-        # Validate input - this will make the empty/None tests pass
-        if not query or (isinstance(query, str) and not query.strip()):
-            raise ValueError("Query cannot be empty or None")
-        
-        # Get relevant memories
-        memories = self.recall(query, limit=context_limit)
-        
-        # Use the _generate_reasoning_response method
-        return self._generate_reasoning_response(query, memories)
-    
-    def _generate_reasoning_response(self, query: str, memories: List[Dict[str, Any]]) -> str:
-        """Generate reasoning response based on query and memories.
-        
-        Args:
-            query: The original query
-            memories: List of relevant memories
-            
-        Returns:
-            Generated reasoning response
-        """
-        if not memories:
-            return "I don't have any relevant memories to answer that question."
-        
-        # Simple reasoning: concatenate relevant memories
-        context_parts = []
-        for i, memory in enumerate(memories, 1):
-            content = memory.get('content', '')
-            similarity = memory.get('similarity', 0)
-            search_type = memory.get('search_type', 'unknown')
-            
-            context_parts.append(
-                f"Memory {i} ({search_type}, similarity: {similarity:.2f}): {content}"
-            )
-        
-        context = "\n\n".join(context_parts)
-        
-        # MVP reasoning response
-        response = f"Based on {len(memories)} relevant memories:\n\n{context}\n\n"
-        response += f"To answer '{query}', I found the above related information. "
-        response += "For more sophisticated reasoning, this MVP can be enhanced with LLM integration."
-        
-        return response
-    
-    # Alias methods for test compatibility
-    def store(self, content: str, context: Optional[Dict] = None) -> str:
-        """Store a memory (alias for remember method for test compatibility).
-        
-        Args:
-            content: The content to store
-            context: Context/metadata dictionary
-            
-        Returns:
-            String representation of memory ID
-        """
-        memory_id = self.remember(content, context)
-        return str(memory_id)
-    
-    def retrieve(self, memory_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a memory by ID (alias for get_memory for test compatibility).
-        
-        Args:
-            memory_id: Memory ID as string
-            
-        Returns:
-            Memory dictionary or None if not found
-        """
-        try:
-            # Convert string ID to int and get memory
-            int_id = int(memory_id)
-            memory = self.get_memory(int_id)
-            if memory:
-                # Ensure the memory has the expected structure for tests
-                memory['id'] = memory_id  # Keep as string for test compatibility
-                # Map 'metadata' to 'context' for test compatibility
-                if 'metadata' in memory:
-                    memory['context'] = memory['metadata']
-            return memory
-        except (ValueError, TypeError):
-            return None
-    
     def export_memories(self, format: str = 'json') -> str:
-        """Export all memories.
+        """Export all memories in specified format.
         
         Args:
             format: Export format ('json' or 'text')
