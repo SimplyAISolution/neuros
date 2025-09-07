@@ -1,0 +1,23 @@
+# Core dependencies for NEUROS
+# SQLite is included with Python standard library
+
+# Vector database for semantic search
+chromadb>=0.4.0
+
+# Sentence transformers for text embeddings
+sentence-transformers>=2.2.0
+
+# Additional dependencies for sentence-transformers
+torch>=1.9.0
+torchvision>=0.10.0
+
+# NumPy for numerical operations
+numpy>=1.21.0
+
+# Logging and utilities
+logging>=0.4.9.6
+
+# Optional: For development and testing
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0
